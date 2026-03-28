@@ -1,83 +1,243 @@
 const express = require("express");
 const { engine } = require("express-handlebars");
-const { MongoClient } = require("mongodb");
-const employeePersistence = require("./persistence/employeePersistence");
+const { MongoClient, ObjectId } = require("mongodb");
+const cookieParser = require("cookie-parser");
 
 const app = express();
 
-// Disable layouts (assignment requirement)
 app.engine("handlebars", engine({ defaultLayout: false }));
 app.set("view engine", "handlebars");
 app.set("views", "./views");
 
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
-// ===== MongoDB =====
-const uri = "mongodb+srv://sahartahir2002_db_user:abc12345@cluster0.6wsyzfc.mongodb.net/infs3201_winter2026?retryWrites=true&w=majority";
+
+// ===== MongoDB connection =====
+
+const uri =
+"mongodb://sahartahir2002_db_user:Ss20022002@ac-3sikkgg-shard-00-00.6wsyzfc.mongodb.net:27017,ac-3sikkgg-shard-00-01.6wsyzfc.mongodb.net:27017,ac-3sikkgg-shard-00-02.6wsyzfc.mongodb.net:27017/?ssl=true&replicaSet=atlas-jfs94n-shard-0&authSource=admin&appName=Cluster0";
+
 const client = new MongoClient(uri);
 
 let db;
 
-/**
- * Connect database and start server
- */
-async function start() {
-    await client.connect();
-    db = client.db("infs3201_winter2026");
+async function connectDB() {
 
-    // give db to persistence layer
-    employeePersistence.setDB(db);
+    await client.connect();
+
+    db = client.db("infs3201_winter2026");
 
     console.log("Connected to MongoDB");
 
-    app.listen(3000, () =>
-        console.log("Server running → http://localhost:3000")
-    );
 }
 
-// ================= ROUTES =================
+connectDB();
 
-// Landing page - employee list
+
+// ===== SECURITY ACCESS LOG MIDDLEWARE (Assignment requirement) =====
+
+app.use(async (req, res, next) => {
+
+    try {
+
+        if (!db) return next();
+
+        await db.collection("security_log").insertOne({
+
+            timestamp: new Date(),
+            username: req.cookies.user || "guest",
+            url: req.originalUrl,
+            method: req.method
+
+        });
+
+    } catch (error) {
+
+        console.log("Security log error:", error);
+
+    }
+
+    next();
+
+});
+
+
+// ===== GLOBAL AUTHENTICATION MIDDLEWARE =====
+
+app.use((req, res, next) => {
+
+    if (
+        req.path === "/login" ||
+        req.path === "/logout"
+    ) {
+        return next();
+    }
+
+    if (!req.cookies.user) {
+
+        return res.redirect("/login");
+
+    }
+
+    next();
+
+});
+
+
+// ===== LOGIN ROUTES =====
+
+app.get("/login", (req, res) => {
+
+    res.render("login");
+
+});
+
+
+app.post("/login", async (req, res) => {
+
+    const { username, password } = req.body;
+
+    const user = await db.collection("users").findOne({
+
+        username: username,
+        password: password
+
+    });
+
+    if (user) {
+
+        res.cookie("user", username, {
+
+            maxAge: 5 * 60 * 1000
+
+        });
+
+        return res.redirect("/");
+
+    }
+
+    res.render("login", { error: true });
+
+});
+
+
+// ===== LOGOUT ROUTE =====
+
+app.get("/logout", (req, res) => {
+
+    res.clearCookie("user");
+
+    res.redirect("/login");
+
+});
+
+
+// ===== EMPLOYEE LIST PAGE =====
+
 app.get("/", async (req, res) => {
-    const employees = await employeePersistence.getAllEmployees();
+
+    const employees = await db.collection("employees").find({}).toArray();
+
     res.render("employees", { employees });
+
 });
 
-// Employee details
+
+// ===== EMPLOYEE DETAILS PAGE =====
+
 app.get("/employee/:id", async (req, res) => {
-    const emp = await employeePersistence.getEmployeeById(req.params.id);
 
-    if (!emp) return res.send("Employee not found");
+    try {
 
-    res.render("details", { emp });
+        const employee = await db.collection("employees").findOne({
+
+            _id: new ObjectId(req.params.id)
+
+        });
+
+        if (!employee) {
+
+            return res.send("Employee not found");
+
+        }
+
+        res.render("details", { employee });
+
+    } catch (error) {
+
+        console.log(error);
+
+        res.send("Invalid employee ID");
+
+    }
+
 });
 
-// Edit page
-app.get("/employee/:id/edit", async (req, res) => {
-    const emp = await employeePersistence.getEmployeeById(req.params.id);
 
-    if (!emp) return res.send("Employee not found");
+// ===== EDIT EMPLOYEE PAGE =====
 
-    res.render("edit", { emp });
+app.get("/edit/:id", async (req, res) => {
+
+    try {
+
+        const employee = await db.collection("employees").findOne({
+
+            _id: new ObjectId(req.params.id)
+
+        });
+
+        res.render("edit", { employee });
+
+    } catch (error) {
+
+        console.log(error);
+
+        res.send("Invalid employee ID");
+
+    }
+
 });
 
-// Handle edit submission (SERVER VALIDATION + PRG)
-app.post("/employee/:id/edit", async (req, res) => {
 
-    let name = req.body.name ? req.body.name.trim() : "";
-    let phone = req.body.phone ? req.body.phone.trim() : "";
+app.post("/edit/:id", async (req, res) => {
 
-    // Validation rules
-    if (name.length === 0)
-        return res.send("Name must not be empty");
+    try {
 
-    if (!/^\d{4}-\d{4}$/.test(phone))
-        return res.send("Phone must be in format ####-####");
+        await db.collection("employees").updateOne(
 
-    await employeePersistence.updateEmployee(req.params.id, name, phone);
+            { _id: new ObjectId(req.params.id) },
 
-    // PRG pattern (required)
-    res.redirect("/");
+            {
+
+                $set: {
+
+                    name: req.body.name,
+                    phone: req.body.phone
+
+                }
+
+            }
+
+        );
+
+        res.redirect("/");
+
+    } catch (error) {
+
+        console.log(error);
+
+        res.send("Update failed");
+
+    }
+
 });
 
-start();
+
+// ===== START SERVER =====
+
+app.listen(3000, () => {
+
+    console.log("Server running on http://localhost:3000");
+
+});
