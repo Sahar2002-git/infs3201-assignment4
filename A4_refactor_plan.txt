@@ -1,0 +1,25 @@
+Assignment 4 Refactor Plan
+
+Collections that will change:
+The assignments collection will be removed completely as shift documents will now contain embedded employee ObjectId references.
+The shifts collection will be modified to include an employees array storing employee ObjectIds.
+The employees collection will remove the employeeId field and rely only on MongoDB _id as the primary identifier.
+
+Persistence functions that must change:
+Any functions referencing employeeId and shiftId must be updated to use ObjectId values instead.
+Functions that retrieve assignment records must be removed since the assignments collection will no longer exist.
+Shift retrieval functions must now access embedded employee ObjectId arrays inside shift documents.
+
+Business logic changes:
+Employee-to-shift relationships will now be stored directly inside shift documents.
+Assignment lookup logic between employees and shifts will be simplified by removing the assignments collection.
+
+Effect of embedded arrays on update operations:
+Employee assignment updates will require modifying the employees array inside shift documents.
+MongoDB update operations such as $push and $pull will be used when modifying employee assignments.
+
+Risks and complications:
+Incorrect ObjectId conversion may cause database lookup failures.
+Removing the assignments collection may break existing persistence functions if not updated carefully.
+Embedded arrays increase document complexity and require careful update handling.
+Authentication middleware integration may temporarily block routes if session handling is not implemented correctly.
