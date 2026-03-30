@@ -1,12 +1,57 @@
-<style>
-.morning {
-    background-color: yellow;
-}
-</style>
-
 <h2>{{employee.name}}</h2>
 
 <p>Phone: {{employee.phone}}</p>
+
+<br>
+
+<h3>Upload PDF Document</h3>
+
+<form
+    action="/upload/{{employee._id}}"
+    method="POST"
+    enctype="multipart/form-data"
+>
+
+<input
+    type="file"
+    name="document"
+    accept=".pdf"
+    required
+>
+
+<button type="submit">
+Upload
+</button>
+
+</form>
+
+<br>
+
+<h3>Uploaded Documents</h3>
+
+{{#if employee.documents}}
+
+<ul>
+
+{{#each employee.documents}}
+
+<li>
+<a href="/document/{{this}}">
+{{this}}
+</a>
+</li>
+
+{{/each}}
+
+</ul>
+
+{{else}}
+
+<p>No documents uploaded yet.</p>
+
+{{/if}}
+
+<br>
 
 <a href="/edit/{{employee._id}}">
 Edit Details
@@ -14,4 +59,6 @@ Edit Details
 
 <br><br>
 
-<a href="/">Back</a>
+<a href="/">
+Back
+</a>

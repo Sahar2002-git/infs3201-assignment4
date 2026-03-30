@@ -3,6 +3,8 @@ const express = require("express");
 const { engine } = require("express-handlebars");
 const { MongoClient, ObjectId } = require("mongodb");
 const cookieParser = require("cookie-parser");
+const multer = require("multer");
+const path = require("path");
 
 const app = express();
 
@@ -14,7 +16,29 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 
-// ===== MongoDB connection =====
+// ================= MULTER CONFIG =================
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/"),
+    filename: (req, file, cb) =>
+        cb(null, Date.now() + "-" + file.originalname)
+});
+
+const upload = multer({
+    storage,
+    limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+    fileFilter: (req, file, cb) => {
+
+        if (path.extname(file.originalname) !== ".pdf")
+            return cb(new Error("Only PDF files allowed"));
+
+        cb(null, true);
+
+    }
+});
+
+
+// ================= DATABASE CONNECTION =================
 
 const uri =
 "mongodb://sahartahir2002_db_user:Ss20022002@ac-3sikkgg-shard-00-00.6wsyzfc.mongodb.net:27017,ac-3sikkgg-shard-00-01.6wsyzfc.mongodb.net:27017,ac-3sikkgg-shard-00-02.6wsyzfc.mongodb.net:27017/?ssl=true&replicaSet=atlas-jfs94n-shard-0&authSource=admin&appName=Cluster0";
@@ -36,35 +60,27 @@ async function connectDB() {
 connectDB();
 
 
-// ===== SECURITY ACCESS LOG MIDDLEWARE =====
+// ================= SECURITY LOGGING =================
 
 app.use(async (req, res, next) => {
 
-    try {
+    if (!db) return next();
 
-        if (!db) return next();
+    await db.collection("security_log").insertOne({
 
-        await db.collection("security_log").insertOne({
+        timestamp: new Date(),
+        username: req.cookies.user || "guest",
+        url: req.originalUrl,
+        method: req.method
 
-            timestamp: new Date(),
-            username: req.cookies.user || "guest",
-            url: req.originalUrl,
-            method: req.method
-
-        });
-
-    } catch (error) {
-
-        console.log("Security log error:", error);
-
-    }
+    });
 
     next();
 
 });
 
 
-// ===== GLOBAL AUTHENTICATION MIDDLEWARE =====
+// ================= AUTH MIDDLEWARE =================
 
 app.use((req, res, next) => {
 
@@ -72,22 +88,17 @@ app.use((req, res, next) => {
         req.path === "/login" ||
         req.path === "/logout" ||
         req.path === "/2fa"
-    ) {
-        return next();
-    }
+    ) return next();
 
-    if (!req.cookies.user) {
-
+    if (!req.cookies.user)
         return res.redirect("/login");
-
-    }
 
     next();
 
 });
 
 
-// ===== LOGIN PAGE =====
+// ================= LOGIN PAGE =================
 
 app.get("/login", (req, res) => {
 
@@ -96,7 +107,7 @@ app.get("/login", (req, res) => {
 });
 
 
-// ===== LOGIN STEP 1 (PASSWORD CHECK ONLY) =====
+// ================= LOGIN PASSWORD STEP =================
 
 app.post("/login", async (req, res) => {
 
@@ -104,70 +115,35 @@ app.post("/login", async (req, res) => {
 
     const user = await db.collection("users").findOne({ username });
 
-    if (!user) {
-
+    if (!user)
         return res.render("login", { error: true });
 
-    }
-
-    // account already locked
-
-    if (user.locked) {
-
+    if (user.locked)
         return res.render("login", { error: "Account locked" });
-
-    }
-
-    // wrong password
 
     if (user.password !== password) {
 
-        const newAttempts = (user.failedAttempts || 0) + 1;
-
-        // update failed attempts count
+        const newAttempts = user.failedAttempts + 1;
 
         await db.collection("users").updateOne(
-
             { username },
-
             { $set: { failedAttempts: newAttempts } }
-
         );
 
-        // send suspicious activity email after 3 failed attempts
-
-        if (newAttempts === 3) {
-
+        if (newAttempts === 3)
             emailSystem.sendSuspiciousActivityEmail(username);
-
-        }
-
-        // lock account after 10 failed attempts
 
         if (newAttempts >= 10) {
 
             await db.collection("users").updateOne(
-
                 { username },
-
-                {
-
-                    $set: {
-
-                        locked: true
-
-                    }
-
-                }
-
+                { $set: { locked: true } }
             );
 
             emailSystem.sendAccountLockedEmail(username);
 
             return res.render("login", {
-
                 error: "Account locked after too many failed attempts"
-
             });
 
         }
@@ -176,33 +152,17 @@ app.post("/login", async (req, res) => {
 
     }
 
-    // correct password → reset failed attempts
-
     await db.collection("users").updateOne(
-
         { username },
-
-        {
-
-            $set: {
-
-                failedAttempts: 0
-
-            }
-
-        }
-
+        { $set: { failedAttempts: 0 } }
     );
 
-    // generate 6-digit 2FA code
-
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code =
+        Math.floor(100000 + Math.random() * 900000).toString();
 
     res.cookie("twofa_user", username);
-
     res.cookie("twofa_code", code);
-
-    res.cookie("twofa_expiry", (Date.now() + (3 * 60 * 1000)).toString());
+    res.cookie("twofa_expiry", (Date.now() + 180000).toString());
 
     emailSystem.send2FACode(username, code);
 
@@ -211,7 +171,7 @@ app.post("/login", async (req, res) => {
 });
 
 
-// ===== 2FA PAGE =====
+// ================= 2FA PAGE =================
 
 app.get("/2fa", (req, res) => {
 
@@ -220,39 +180,24 @@ app.get("/2fa", (req, res) => {
 });
 
 
-// ===== 2FA VERIFICATION =====
+// ================= 2FA VERIFY =================
 
-app.post("/2fa", async (req, res) => {
+app.post("/2fa", (req, res) => {
 
-    const enteredCode = req.body.code;
-
-    const storedCode = req.cookies.twofa_code;
-
+    const entered = req.body.code;
+    const stored = req.cookies.twofa_code;
     const expiry = req.cookies.twofa_expiry;
-
     const username = req.cookies.twofa_user;
 
-    if (!storedCode || !expiry || Date.now() > expiry) {
-
+    if (!stored || Date.now() > expiry)
         return res.render("2fa", { error: true });
 
-    }
-
-    if (enteredCode !== storedCode) {
-
+    if (entered !== stored)
         return res.render("2fa", { error: true });
-
-    }
-
-    // start session ONLY after successful 2FA
 
     res.cookie("user", username, {
-
         maxAge: 5 * 60 * 1000
-
     });
-
-    // clear temp cookies
 
     res.clearCookie("twofa_user");
     res.clearCookie("twofa_code");
@@ -263,7 +208,7 @@ app.post("/2fa", async (req, res) => {
 });
 
 
-// ===== LOGOUT ROUTE =====
+// ================= LOGOUT =================
 
 app.get("/logout", (req, res) => {
 
@@ -274,111 +219,104 @@ app.get("/logout", (req, res) => {
 });
 
 
-// ===== EMPLOYEE LIST PAGE =====
+// ================= EMPLOYEE LIST =================
 
 app.get("/", async (req, res) => {
 
-    const employees = await db.collection("employees").find({}).toArray();
+    const employees =
+        await db.collection("employees").find().toArray();
 
     res.render("employees", { employees });
 
 });
 
 
-// ===== EMPLOYEE DETAILS PAGE =====
+// ================= EMPLOYEE DETAILS =================
 
 app.get("/employee/:id", async (req, res) => {
 
-    try {
-
-        const employee = await db.collection("employees").findOne({
-
+    const employee =
+        await db.collection("employees").findOne({
             _id: new ObjectId(req.params.id)
-
         });
 
-        if (!employee) {
-
-            return res.send("Employee not found");
-
-        }
-
-        res.render("details", { employee });
-
-    } catch (error) {
-
-        console.log(error);
-
-        res.send("Invalid employee ID");
-
-    }
+    res.render("details", { employee });
 
 });
 
 
-// ===== EDIT EMPLOYEE PAGE =====
+// ================= EDIT EMPLOYEE =================
 
 app.get("/edit/:id", async (req, res) => {
 
-    try {
-
-        const employee = await db.collection("employees").findOne({
-
+    const employee =
+        await db.collection("employees").findOne({
             _id: new ObjectId(req.params.id)
-
         });
 
-        res.render("edit", { employee });
-
-    } catch (error) {
-
-        console.log(error);
-
-        res.send("Invalid employee ID");
-
-    }
+    res.render("edit", { employee });
 
 });
 
 
 app.post("/edit/:id", async (req, res) => {
 
-    try {
-
-        await db.collection("employees").updateOne(
-
-            { _id: new ObjectId(req.params.id) },
-
-            {
-
-                $set: {
-
-                    name: req.body.name,
-                    phone: req.body.phone
-
-                }
-
+    await db.collection("employees").updateOne(
+        { _id: new ObjectId(req.params.id) },
+        {
+            $set: {
+                name: req.body.name,
+                phone: req.body.phone
             }
+        }
+    );
 
-        );
-
-        res.redirect("/");
-
-    } catch (error) {
-
-        console.log(error);
-
-        res.send("Update failed");
-
-    }
+    res.redirect("/");
 
 });
 
 
-// ===== START SERVER =====
+// ================= DOCUMENT UPLOAD ROUTE =================
 
-app.listen(3000, () => {
+app.post("/upload/:id", upload.single("document"), async (req, res) => {
 
-    console.log("Server running on http://localhost:3000");
+    const employeeId = req.params.id;
+
+    const employee =
+        await db.collection("employees").findOne({
+            _id: new ObjectId(employeeId)
+        });
+
+    if (!employee.documents)
+        employee.documents = [];
+
+    if (employee.documents.length >= 5)
+        return res.send("Maximum 5 documents allowed");
+
+    await db.collection("employees").updateOne(
+        { _id: new ObjectId(employeeId) },
+        {
+            $push: {
+                documents: req.file.filename
+            }
+        }
+    );
+
+    res.redirect("/employee/" + employeeId);
 
 });
+// ===== SECURE DOCUMENT DOWNLOAD ROUTE =====
+
+app.get("/document/:filename", (req, res) => {
+
+    const filePath = path.join(__dirname, "uploads", req.params.filename);
+
+    res.download(filePath);
+
+});
+
+// ================= START SERVER =================
+
+app.listen(3000, () =>
+    console.log("Server running on http://localhost:3000")
+);
