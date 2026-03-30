@@ -110,7 +110,7 @@ app.post("/login", async (req, res) => {
 
     }
 
-    // block if account locked
+    // account already locked
 
     if (user.locked) {
 
@@ -118,11 +118,13 @@ app.post("/login", async (req, res) => {
 
     }
 
-    // wrong password attempt
+    // wrong password
 
     if (user.password !== password) {
 
         const newAttempts = (user.failedAttempts || 0) + 1;
+
+        // update failed attempts count
 
         await db.collection("users").updateOne(
 
@@ -140,6 +142,36 @@ app.post("/login", async (req, res) => {
 
         }
 
+        // lock account after 10 failed attempts
+
+        if (newAttempts >= 10) {
+
+            await db.collection("users").updateOne(
+
+                { username },
+
+                {
+
+                    $set: {
+
+                        locked: true
+
+                    }
+
+                }
+
+            );
+
+            emailSystem.sendAccountLockedEmail(username);
+
+            return res.render("login", {
+
+                error: "Account locked after too many failed attempts"
+
+            });
+
+        }
+
         return res.render("login", { error: true });
 
     }
@@ -150,7 +182,15 @@ app.post("/login", async (req, res) => {
 
         { username },
 
-        { $set: { failedAttempts: 0 } }
+        {
+
+            $set: {
+
+                failedAttempts: 0
+
+            }
+
+        }
 
     );
 
@@ -163,8 +203,6 @@ app.post("/login", async (req, res) => {
     res.cookie("twofa_code", code);
 
     res.cookie("twofa_expiry", (Date.now() + (3 * 60 * 1000)).toString());
-
-    // simulate sending email
 
     emailSystem.send2FACode(username, code);
 
@@ -214,7 +252,7 @@ app.post("/2fa", async (req, res) => {
 
     });
 
-    // clear temporary cookies
+    // clear temp cookies
 
     res.clearCookie("twofa_user");
     res.clearCookie("twofa_code");
