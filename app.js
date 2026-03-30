@@ -1,3 +1,4 @@
+const emailSystem = require("./emailSystem");
 const express = require("express");
 const { engine } = require("express-handlebars");
 const { MongoClient, ObjectId } = require("mongodb");
@@ -35,7 +36,7 @@ async function connectDB() {
 connectDB();
 
 
-// ===== SECURITY ACCESS LOG MIDDLEWARE (Assignment requirement) =====
+// ===== SECURITY ACCESS LOG MIDDLEWARE =====
 
 app.use(async (req, res, next) => {
 
@@ -69,7 +70,8 @@ app.use((req, res, next) => {
 
     if (
         req.path === "/login" ||
-        req.path === "/logout"
+        req.path === "/logout" ||
+        req.path === "/2fa"
     ) {
         return next();
     }
@@ -85,7 +87,7 @@ app.use((req, res, next) => {
 });
 
 
-// ===== LOGIN ROUTES =====
+// ===== LOGIN PAGE =====
 
 app.get("/login", (req, res) => {
 
@@ -94,30 +96,131 @@ app.get("/login", (req, res) => {
 });
 
 
+// ===== LOGIN STEP 1 (PASSWORD CHECK ONLY) =====
+
 app.post("/login", async (req, res) => {
 
     const { username, password } = req.body;
 
-    const user = await db.collection("users").findOne({
+    const user = await db.collection("users").findOne({ username });
 
-        username: username,
-        password: password
+    if (!user) {
 
-    });
-
-    if (user) {
-
-        res.cookie("user", username, {
-
-            maxAge: 5 * 60 * 1000
-
-        });
-
-        return res.redirect("/");
+        return res.render("login", { error: true });
 
     }
 
-    res.render("login", { error: true });
+    // block if account locked
+
+    if (user.locked) {
+
+        return res.render("login", { error: "Account locked" });
+
+    }
+
+    // wrong password attempt
+
+    if (user.password !== password) {
+
+        const newAttempts = (user.failedAttempts || 0) + 1;
+
+        await db.collection("users").updateOne(
+
+            { username },
+
+            { $set: { failedAttempts: newAttempts } }
+
+        );
+
+        // send suspicious activity email after 3 failed attempts
+
+        if (newAttempts === 3) {
+
+            emailSystem.sendSuspiciousActivityEmail(username);
+
+        }
+
+        return res.render("login", { error: true });
+
+    }
+
+    // correct password → reset failed attempts
+
+    await db.collection("users").updateOne(
+
+        { username },
+
+        { $set: { failedAttempts: 0 } }
+
+    );
+
+    // generate 6-digit 2FA code
+
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+    res.cookie("twofa_user", username);
+
+    res.cookie("twofa_code", code);
+
+    res.cookie("twofa_expiry", (Date.now() + (3 * 60 * 1000)).toString());
+
+    // simulate sending email
+
+    emailSystem.send2FACode(username, code);
+
+    res.redirect("/2fa");
+
+});
+
+
+// ===== 2FA PAGE =====
+
+app.get("/2fa", (req, res) => {
+
+    res.render("2fa");
+
+});
+
+
+// ===== 2FA VERIFICATION =====
+
+app.post("/2fa", async (req, res) => {
+
+    const enteredCode = req.body.code;
+
+    const storedCode = req.cookies.twofa_code;
+
+    const expiry = req.cookies.twofa_expiry;
+
+    const username = req.cookies.twofa_user;
+
+    if (!storedCode || !expiry || Date.now() > expiry) {
+
+        return res.render("2fa", { error: true });
+
+    }
+
+    if (enteredCode !== storedCode) {
+
+        return res.render("2fa", { error: true });
+
+    }
+
+    // start session ONLY after successful 2FA
+
+    res.cookie("user", username, {
+
+        maxAge: 5 * 60 * 1000
+
+    });
+
+    // clear temporary cookies
+
+    res.clearCookie("twofa_user");
+    res.clearCookie("twofa_code");
+    res.clearCookie("twofa_expiry");
+
+    res.redirect("/");
 
 });
 
